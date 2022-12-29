@@ -22,8 +22,8 @@ import torch.backends.cudnn as cudnn
 from yolov5.models.experimental import attempt_load
 from yolov5.utils.downloads import attempt_download
 from yolov5.models.common import DetectMultiBackend
-from yolov5.utils.datasets import LoadImages, LoadStreams
-from yolov5.utils.general import (LOGGER, check_img_size, non_max_suppression, scale_coords, 
+from yolov5.utils.dataloaders import LoadImages, LoadStreams
+from yolov5.utils.general import (LOGGER, check_img_size, non_max_suppression, scale_boxes, 
                                   check_imshow, xyxy2xywh, increment_path)
 from yolov5.utils.torch_utils import select_device, time_sync
 from yolov5.utils.plots import Annotator, colors
@@ -35,8 +35,17 @@ ROOT = FILE.parents[0]  # yolov5 deepsort root directory
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))  # add ROOT to PATH
 ROOT = Path(os.path.relpath(ROOT, Path.cwd()))  # relative
-count = 0
-data = []
+
+line_height_from_top = 350
+
+count = 0 # conuter
+data = [] # store ids that has been count
+
+count_in = 0
+count_out = 0
+in_ids = []
+out_ids = []
+
 def detect(opt):
     out, source, yolo_model, deep_sort_model, show_vid, save_vid, save_txt, imgsz, evaluate, half, project, name, exist_ok= \
         opt.output, opt.source, opt.yolo_model, opt.deep_sort_model, opt.show_vid, opt.save_vid, \
@@ -47,6 +56,7 @@ def detect(opt):
     # initialize deepsort
     cfg = get_config()
     cfg.merge_from_file(opt.config_deepsort)
+    # in depp_sort folder config
     deepsort = DeepSort(deep_sort_model,
                         max_dist=cfg.DEEPSORT.MAX_DIST,
                         max_iou_distance=cfg.DEEPSORT.MAX_IOU_DISTANCE,
@@ -93,6 +103,7 @@ def detect(opt):
         dataset = LoadStreams(source, img_size=imgsz, stride=stride, auto=pt and not jit)
         bs = len(dataset)  # batch_size
     else:
+        # loadimage, read the frames, main thread preprocessor
         dataset = LoadImages(source, img_size=imgsz, stride=stride, auto=pt and not jit)
         bs = 1  # batch_size
     vid_path, vid_writer = [None] * bs, [None] * bs
@@ -107,6 +118,7 @@ def detect(opt):
     if pt and device.type != 'cpu':
         model(torch.zeros(1, 3, *imgsz).to(device).type_as(next(model.model.parameters())))  # warmup
     dt, seen = [0.0, 0.0, 0.0, 0.0], 0
+    # read each frame
     for frame_idx, (path, img, im0s, vid_cap, s) in enumerate(dataset):
         t1 = time_sync()
         img = torch.from_numpy(img).to(device)
@@ -144,7 +156,7 @@ def detect(opt):
             w, h = im0.shape[1],im0.shape[0]
             if det is not None and len(det):
                 # Rescale boxes from img_size to im0 size
-                det[:, :4] = scale_coords(
+                det[:, :4] = scale_boxes(
                     img.shape[2:], det[:, :4], im0.shape).round()
 
                 # Print results
@@ -170,6 +182,7 @@ def detect(opt):
                         id = output[4]
                         cls = output[5]
                         #count
+                        #define an event to count
                         count_obj(bboxes,w,h,id)
                         c = int(cls)  # integer class
                         label = f'{id} {names[c]} {conf:.2f}'
@@ -195,17 +208,23 @@ def detect(opt):
             # Stream results
             im0 = annotator.result()
             if show_vid:
-                global count
+                global count, line_height_from_top
+                global count_in, count_out
                 color=(0,255,0)
-                start_point = (0, h-350)
-                end_point = (w, h-350)
+                text_color=(0,200,0)
+                start_point = (0, h-line_height_from_top)
+                end_point = (w, h-line_height_from_top)
+                # draw the line (hot region)
                 cv2.line(im0, start_point, end_point, color, thickness=2)
+                # put text count result
                 thickness = 3
-                org = (150, 150)
+                org = (50, 600)
                 font = cv2.FONT_HERSHEY_SIMPLEX
-                fontScale = 3
-                cv2.putText(im0, str(count), org, font, 
-                   fontScale, color, thickness, cv2.LINE_AA)
+                fontScale = 1
+                # cv2.putText(im0, str(count), org, font, 
+                #    fontScale, color, thickness, cv2.LINE_AA)
+                cv2.putText(im0, f"People staying in station: {count_in}", org, font, fontScale, text_color, thickness, cv2.LINE_AA)
+
                 cv2.imshow(str(p), im0)
                 if cv2.waitKey(1) == ord('q'):  # q to quit
                     raise StopIteration
@@ -236,19 +255,34 @@ def detect(opt):
             os.system('open ' + save_path)
 
 def count_obj(box,w,h,id):
-    global count,data
+    global count,data,line_height_from_top
+    global count_in, count_out, in_ids, out_ids
     center_coordinates = (int(box[0]+(box[2]-box[0])/2) , int(box[1]+(box[3]-box[1])/2))
-    if int(box[1]+(box[3]-box[1])/2) > (h -350):
-        if  id not in data:
-            count += 1
-            data.append(id)
-
+    box_y = int(box[1]+(box[3]-box[1])/2)
+    # if int(box[1]+(box[3]-box[1])/2) > (h - line_height_from_top): # if the center point pass the line then count
+    #     if  id not in data:
+    #         count += 1
+    #         data.append(id)
+    if box_y >= (h - line_height_from_top): #in
+        if id not in in_ids:
+            count_in += 1
+            in_ids.append(id)
+        if id in out_ids:
+            count_out -= 1
+            out_ids.remove(id)
+    if box_y < (h - line_height_from_top): #out
+        if id not in out_ids:
+            count_out += 1
+            out_ids.append(id)
+        if id in in_ids:
+            count_in -= 1
+            in_ids.remove(id)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--yolo_model', nargs='+', type=str, default='yolov5n.pt', help='model.pt path(s)')
     parser.add_argument('--deep_sort_model', type=str, default='osnet_x0_25')
-    parser.add_argument('--source', type=str, default='videos/Traffic.mp4', help='source')  # file/folder, 0 for webcam
+    parser.add_argument('--source', type=str, default='videos/people_walking.mp4', help='source')  # file/folder, 0 for webcam
     parser.add_argument('--output', type=str, default='inference/output', help='output folder')  # output folder
     parser.add_argument('--imgsz', '--img', '--img-size', nargs='+', type=int, default=[480], help='inference size h,w')
     parser.add_argument('--conf-thres', type=float, default=0.5, help='object confidence threshold')
@@ -276,3 +310,6 @@ if __name__ == '__main__':
 
     with torch.no_grad():
         detect(opt)
+
+# the command:
+# PYTORCH_ENABLE_MPS_FALLBACK=1 python track.py --class 0 --device mps 
