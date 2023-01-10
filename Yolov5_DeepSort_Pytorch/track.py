@@ -177,7 +177,6 @@ def detect(opt):
                 # draw boxes for visualization
                 if len(outputs) > 0:
                     for j, (output, conf) in enumerate(zip(outputs, confs)):
-
                         bboxes = output[0:4]
                         id = output[4]
                         cls = output[5]
